@@ -88,6 +88,8 @@ aws scheduler list-schedules --profile mamelabo --region ap-northeast-1 \
   --query "Schedules[?contains(Name, 'tanakaya-open-days-test')].[Name,State]" --output table
 ```
 
+スケジュールの名前は `<スタック名>-notify`。2026-10-06 の初回デプロイのテスト用スタックだけは、名前を付ける前のテンプレートで作ったため `NotifyFunctionNotifySchedule` になっている（次のデプロイで `tanakaya-open-days-test-notify` に置き換わる）。
+
 `State` が `DISABLED` であること。
 
 ## 2. 設定だけを変えるとき（休業日、臨時営業日、営業曜日、営業時間）

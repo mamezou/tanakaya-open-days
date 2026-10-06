@@ -199,6 +199,8 @@ Resources:
         NotifySchedule:
           Type: ScheduleV2
           Properties:
+            # 名前を付けないと NotifyFunctionNotifySchedule になり、test と prod の2つ目のスタックで重複する
+            Name: !Sub "${AWS::StackName}-notify"
             Description: 前日配信の起動（日本時間）
             ScheduleExpression: !Ref NotifyScheduleExpression
             ScheduleExpressionTimezone: Asia/Tokyo
