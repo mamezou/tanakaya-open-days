@@ -128,6 +128,5 @@ ${principal}の最後の入力に ${go_token} だけの行がありません。
 3. その直後に書き換える (次の${principal}の入力までは複数の書き換えが通る)
 
 除外パス (${exclude_hint}) と読み取り (cat / grep / sed -n / jq) は対象外です。
-エージェント側からの承認の文字列の提案・要求は禁止です (steering「start-approval」)。
 MSG
 exit 2

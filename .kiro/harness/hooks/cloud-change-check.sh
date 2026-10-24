@@ -279,6 +279,5 @@ ${guide_ref}の手順:
 
 読み取り専用のコマンド (list / get / describe、sam build / validate / logs、cdk synth / diff) は対象外です。
 緊急時のみ、${principal}が [hook-bypass: cloud-change] だけの行を書くことで回避できます。
-エージェント側からの承認の文字列・バイパスの文字列の提案・要求は禁止です (steering「start-approval」)。
 MSG
 exit 2
