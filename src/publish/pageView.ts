@@ -9,6 +9,7 @@ import {
   formatYearMonth,
 } from "../calendar/format";
 import type { DayStatus } from "../calendar/judge";
+import type { Announcement } from "../settings/announcement";
 import type { CalendarData } from "./buildCalendarData";
 import { selectMonths, selectToday } from "./selectToday";
 
@@ -39,6 +40,18 @@ export const CELL_MARKS: Readonly<Record<DayKind, string>> = {
 /** 「今日」が分からないときの案内（要件 4.5） */
 export const UNAVAILABLE_MESSAGE = "営業日は公式LINEでご確認ください。";
 
+/** お知らせのある日のマスの印と、読み上げ用の文字（要件 4.9） */
+export const ANNOUNCEMENT_MARK = "★";
+export const ANNOUNCEMENT_SPOKEN_LABEL = "お知らせあり";
+
+/** 表示するお知らせ。dateLabel は「11月1日（日）」 */
+export type AnnouncementView = {
+  date: IsoDate;
+  dateLabel: string;
+  text: string;
+  link: { label: string; url: string } | null;
+};
+
 export const dayKindOf = ({ open, exception }: DayStatus): DayKind => {
   if (exception) {
     return open ? DayKind.SpecialOpen : DayKind.SpecialClosed;
@@ -53,6 +66,8 @@ export type TodayPageView =
       dayKind: DayKind;
       statusLabel: string;
       hoursLabel: string | null;
+      /** 今日のお知らせ（要件 4.10）。なければ null */
+      announcement: AnnouncementView | null;
     }
   | { kind: "unavailable"; dateLabel: string; message: string };
 
@@ -62,9 +77,15 @@ export type CellView = {
   dayKind: DayKind;
   mark: string;
   isToday: boolean;
+  hasAnnouncement: boolean;
 };
 
-export type MonthPageView = { caption: string; weeks: Array<Array<CellView | null>> };
+export type MonthPageView = {
+  caption: string;
+  weeks: Array<Array<CellView | null>>;
+  /** その月のお知らせ（要件 4.9）。日付の順 */
+  announcements: AnnouncementView[];
+};
 
 export type PageView = { today: TodayPageView; months: MonthPageView[] };
 
@@ -87,6 +108,35 @@ const toWeeks = (cells: CellView[]): Array<Array<CellView | null>> => {
   return weeks;
 };
 
+const toAnnouncementView = ({ date, text, link }: Announcement): AnnouncementView => ({
+  date,
+  dateLabel: formatMonthDayWithWeekday(date),
+  text,
+  link: link === undefined ? null : { label: link.label, url: link.url },
+});
+
+const buildToday = (input: {
+  data: CalendarData;
+  now: Date;
+  dateLabel: string;
+  announcement: Announcement | undefined;
+}): TodayPageView => {
+  const { data, now, dateLabel, announcement } = input;
+  const selected = selectToday(data, now);
+  if (selected.kind !== "inRange") {
+    return { kind: "unavailable", dateLabel, message: UNAVAILABLE_MESSAGE };
+  }
+  const dayKind = dayKindOf(selected);
+  return {
+    kind: "inRange",
+    dateLabel,
+    dayKind,
+    statusLabel: STATUS_LABELS[dayKind],
+    hoursLabel: selected.open ? formatBusinessHours(selected.businessHours) : null,
+    announcement: announcement === undefined ? null : toAnnouncementView(announcement),
+  };
+};
+
 /**
  * 公開ページの内容を作る。data が null（calendar.json を読めない）ときは、
  * 範囲外と同じく営業可否を出さずに案内する（要件 4.5）。
@@ -97,20 +147,15 @@ export const buildPageView = (data: CalendarData | null, now: Date): PageView =>
   if (data === null) {
     return { today: { kind: "unavailable", dateLabel, message: UNAVAILABLE_MESSAGE }, months: [] };
   }
-  const selected = selectToday(data, now);
-  const today: TodayPageView =
-    selected.kind === "inRange"
-      ? (() => {
-          const dayKind = dayKindOf(selected);
-          return {
-            kind: "inRange",
-            dateLabel,
-            dayKind,
-            statusLabel: STATUS_LABELS[dayKind],
-            hoursLabel: selected.open ? formatBusinessHours(selected.businessHours) : null,
-          };
-        })()
-      : { kind: "unavailable", dateLabel, message: UNAVAILABLE_MESSAGE };
+  const announcementsByDate = new Map(
+    data.announcements.map((announcement) => [announcement.date, announcement]),
+  );
+  const today = buildToday({
+    data,
+    now,
+    dateLabel,
+    announcement: announcementsByDate.get(todayDate),
+  });
   const months = selectMonths(data, now).map((month) => ({
     caption: formatYearMonth(month),
     weeks: toWeeks(
@@ -122,9 +167,14 @@ export const buildPageView = (data: CalendarData | null, now: Date): PageView =>
           dayKind,
           mark: CELL_MARKS[dayKind],
           isToday: day.date === todayDate,
+          hasAnnouncement: announcementsByDate.has(day.date),
         };
       }),
     ),
+    announcements: month.days.flatMap((day) => {
+      const announcement = announcementsByDate.get(day.date);
+      return announcement === undefined ? [] : [toAnnouncementView(announcement)];
+    }),
   }));
   return { today, months };
 };

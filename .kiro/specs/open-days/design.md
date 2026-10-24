@@ -1,6 +1,6 @@
 # 設計書：田中屋 営業日カレンダー
 
-状態：確定（2026-10-05）。改訂：2026-10-24（要件 5.7 の変更に合わせ、案内の文面を更新）
+状態：確定（2026-10-05）。改訂：2026-10-24（要件 5.7 の変更に合わせ、案内の文面を更新。お知らせを追加）
 
 要件は `requirements.md`（確定版）。本書の「要件 x.y」はその番号を指す。
 
@@ -21,6 +21,9 @@
 | 公開用データは12か月分を作り、「今日」はブラウザで選ぶ | 再デプロイなしで日付や月が変わっても正しく表示する（要件 4.4） |
 | 案内の文面は、田中屋がふだんの告知で使う文面に合わせる。末尾には公開ページではなく、田中屋のホームページと Instagram を載せる | 2026-10-06 に依頼者が文面を指定した（要件 5.7） |
 | 公開ページの URL は Lambda の環境変数 `PAGE_URL` で渡す。今の文面には使わないが、`MessageInput.pageUrl` と一緒に残す | 公開用データに AWS のリソース名を入れない（要件 3.5）。初回デプロイ前に URL が決まらない問題も避ける。文面に戻すときに配信処理を変えずに済む |
+| お知らせは公開用データの最上位の一覧（`announcements`）に入れ、配信処理も同じデータから読む | 公開ページと LINE に同じ文を出せる。休業日と同じく S3 への反映だけで変えられ、Lambda の権限も増えない |
+| 公開用データを読むときは、お知らせの項目がない古い形も受け入れる（お知らせなしとして扱う） | お知らせを入れる最初のデプロイで、新しい Lambda を先に出してから S3 を更新する。その間に配信が動いても止まらない |
+| お知らせの文は日付によらない書き方にし、LINE と公開ページにそのまま出す。「明日は」などは付けない | 同じ文を前日の LINE と当日の公開ページの両方で読むため |
 | デプロイ用のまとめスクリプトを作らない。`sam deploy` と `aws s3 sync` は手順書のとおり直接実行する | `.kiro/harness/` の hook はコマンドの文字列で変更系を止める。スクリプト経由だと止まらない |
 | スタックをテスト用と本番用の2つに分ける | テスト用アカウントのトークンで試験送信し、本番アカウントへの誤配信を防ぐ（要件 7.2） |
 | 設定の検証は自前の関数で書く | 違反をすべて集めて表示する（要件 2.9）。Lambda とブラウザに依存を持ち込まない |
@@ -54,7 +57,9 @@ flowchart LR
 4. `aws s3 sync dist/site s3://<バケット名> --delete`
 5. `aws cloudfront create-invalidation --distribution-id <ID> --paths "/*"`
 
-バケット名と配信の ID は、スタックの出力（`aws cloudformation describe-stacks`、読み取りのみ）から取る。営業曜日、休業日、臨時営業日、営業時間だけを変えるときは 1、4、5 で足りる。配信時刻を変えるときは 1〜5 のすべてを行う。
+バケット名と配信の ID は、スタックの出力（`aws cloudformation describe-stacks`、読み取りのみ）から取る。営業曜日、休業日、臨時営業日、営業時間、お知らせだけを変えるときは 1、4、5 で足りる。配信時刻を変えるときは 1〜5 のすべてを行う。
+
+お知らせの機能を入れる最初のデプロイだけは、1〜5 のすべてを、3 を 4 より先に行う。お知らせより前の Lambda は、`calendar.json` に知らない項目があると読めずに配信を止めるため。
 
 ## コンポーネントとインターフェース
 
@@ -95,12 +100,17 @@ const toBusinessRules = (settings: Settings): BusinessRules => { /* ... */ };
 ```typescript
 type HhMm = string & { readonly brand: "HhMm" };
 
+/** お知らせ（要件 2.1、2.11）。link は省略できる */
+type Announcement = { date: IsoDate; text: string; link?: { label: string; url: string } };
+
 type Settings = {
   openWeekdays: Weekday[];
   closedDates: IsoDate[];
   specialOpenDates: IsoDate[];
   businessHours: { open: HhMm; close: HhMm };
   notifyTime: HhMm;
+  /** 設定ファイルで省略したときは空の一覧 */
+  announcements: Announcement[];
 };
 
 type ValidationIssue = { path: string; message: string };
@@ -111,15 +121,17 @@ const validateSettings = (raw: unknown):
   | { ok: false; issues: ValidationIssue[] } => { /* ... */ };
 ```
 
-検証の規則（要件 2.3〜2.8）：
+検証の規則（要件 2.3〜2.8、2.11）：
 
-- 最上位の項目は5つだけ。ほかの項目があれば違反
+- 最上位の項目は5つと、省略できる `announcements` だけ。ほかの項目があれば違反
 - 営業曜日は `sun`〜`sat` の名前を重複なく1つ以上
 - 日付は `YYYY-MM-DD` の実在する日。一覧の中の重複も違反
 - 休業日は既定の営業日だけ。臨時営業日は既定の営業日以外だけ。両方に入る日は違反
 - 時刻は `00:00`〜`23:59`。営業時間は開始 < 終了
+- お知らせは `date`、`text`、省略できる `link`（`label` と `url`）だけを持つ。日付は実在する日で、同じ日は1つだけ。前日配信のある日（曜日が営業曜日の日か、臨時営業日）に限る
+- お知らせの文は、空白だけでなく、改行などの制御文字を含まず、120文字以内。リンクの表示名は同じ条件で40文字以内。URL は `https://` で始まる正しい URL で、空白を含まず500文字以内（公開ページの `href` に入れるため、`javascript:` などを通さない）
 
-営業曜日の検証が通らないときは、休業日と臨時営業日の曜日の検証を行わない（同じ原因の違反を重ねて出さないため）。
+営業曜日の検証が通らないときは、休業日と臨時営業日の曜日の検証も、お知らせの日の検証も行わない（同じ原因の違反を重ねて出さないため）。文字数は Unicode のコードポイントで数える（絵文字1つを1文字とする）。
 
 ### `src/publish/`：公開用データと公開ページ
 
@@ -129,6 +141,8 @@ type CalendarData = {
   generatedAt: string; // ISO 8601（UTC）
   range: { from: IsoDate; to: IsoDate };
   businessHours: { open: HhMm; close: HhMm };
+  /** 要件 3.7。範囲内のお知らせを日付の順に。読むときは、この項目がない古い形も受け入れる */
+  announcements: Announcement[];
   days: Array<{ date: IsoDate } & DayStatus>;
 };
 
@@ -159,6 +173,12 @@ const selectMonths = (data: CalendarData, now: Date): MonthView[] => { /* ... */
 - 営業可否は「営業」「休業」「臨時営業」「臨時休業」の文字で示す。色は補助に使う（要件 4.7）
 - カレンダーは `<table>`。`<caption>` に年月、曜日の見出しは `<th scope="col">`
 - `calendar.json` を読めない、または `parseCalendarData` が通らないときは、範囲外と同じ案内を出す
+- お知らせ（要件 4.9、4.10）：
+  - カレンダーのマスに「★」を付け、読み上げ用に「お知らせあり」の文字を添える。凡例に「★」の意味を書く
+  - 各月の表の下に、その月のお知らせを「11月1日（日）」の日付、文、リンクの順で一覧にする
+  - 「今日」にお知らせがあれば、今日の営業時間の下に文とリンクを出す
+  - リンクは `parseCalendarData` で `https://` の URL だと確かめたものだけを `href` に入れる
+- 表示の内容は `src/publish/pageView.ts` の純粋関数で作り、`page.ts` は DOM に描くだけにする
 
 ### `scripts/build-site.ts`：ビルド
 
@@ -180,8 +200,8 @@ type NotificationPlan =
 /** 要件5.2〜5.6。対象日は toJstDate(now) の翌日 */
 const planNotification = (data: CalendarData, now: Date): NotificationPlan => { /* ... */ };
 
-/** 要件5.7。pageUrl は今の文面には使わない */
-const buildMessage = (input: { targetDate: IsoDate; kind: NoticeKind; businessHours: CalendarData["businessHours"]; pageUrl: string }): string => { /* ... */ };
+/** 要件5.7、5.10。announcement は対象日のお知らせ（なければ null）。pageUrl は今の文面には使わない */
+const buildMessage = (input: { targetDate: IsoDate; kind: NoticeKind; businessHours: CalendarData["businessHours"]; announcement: Announcement | null; pageUrl: string }): string => { /* ... */ };
 ```
 
 案内の種類は公開用データの対象日の値で決める。
@@ -229,6 +249,25 @@ HP：https://tanakaya-ramen.com/ja/
 Instagram：https://www.instagram.com/tanakaya_ramen/
 ```
 
+対象日にお知らせがあるとき（要件 5.10）は、2か所に行を足す。ほかの行と空行はそのまま。
+
+- 文：通常営業と臨時休業は「明日{日付}は…」の行の次、臨時営業は「{営業時間}、ご来店を…」の行の次
+- リンク：空行の次（HP の前）に「{表示名}：{URL}」
+
+例（通常営業、2026-11-01 のお知らせ）：
+
+```
+こんばんは、田中屋です🍜
+明日11月1日（日）は11:30〜14:30で営業します🌿
+瀬戸内市民の日です。ご来店のかたに、数量限定でメンマをプレゼントします🎁
+ご予約は、このLINEにご返信いただくか、Instagramのメッセージからどうぞ📩
+ご来店をお待ちしております(*´ω`*)
+
+瀬戸内市民の日：https://www.city.setouchi.lg.jp/soshiki/89/162377.html
+HP：https://tanakaya-ramen.com/ja/
+Instagram：https://www.instagram.com/tanakaya_ramen/
+```
+
 配信処理の本体は、外部とのやりとりを引数で受け取る。
 
 ```typescript
@@ -257,13 +296,13 @@ type NotifyDeps = {
 const runNotify = async (deps: NotifyDeps): Promise<NotifyOutcome> => { /* 下の手順 */ };
 ```
 
-`MessageInput` は `buildMessage` の引数の型（`targetDate`、`kind`、`businessHours`、`pageUrl`）。`buildMessage` を `NotifyDeps` で受け取るのは、文面の実装と配信処理を別々に作ってテストするため。`pageUrl` は今の文面には使わない（設計上の判断を参照）。
+`MessageInput` は `buildMessage` の引数の型（`targetDate`、`kind`、`businessHours`、`announcement`、`pageUrl`）。`buildMessage` を `NotifyDeps` で受け取るのは、文面の実装と配信処理を別々に作ってテストするため。`pageUrl` は今の文面には使わない（設計上の判断を参照）。
 
 `runNotify` の手順：
 
 1. `loadCalendar` で公開用データを読み、`planNotification` で計画を作る
 2. `skip` なら記録して終わる。`outOfRange` ならエラーをログに残して終わる
-3. `deps.buildMessage` で文面を作り、`getToken` でトークンを読む（どちらも記録を作る前に行う。失敗しても記録だけが残らないようにする）
+3. 対象日のお知らせを `data.announcements` から探し、`deps.buildMessage` で文面を作り、`getToken` でトークンを読む（どれも記録を作る前に行う。失敗しても記録だけが残らないようにする）
 4. `records.tryCreate`。`exists` なら送らずに終わる（要件 6.3）
 5. `broadcast` で送る。成功なら `markSent`、失敗なら `markFailed` を呼び、例外を投げずに終わる（要件 6.4）
 
@@ -284,11 +323,18 @@ const runNotify = async (deps: NotifyDeps): Promise<NotifyOutcome> => { /* 下�
   "closedDates": ["2026-10-18"],
   "specialOpenDates": ["2026-10-21"],
   "businessHours": { "open": "11:00", "close": "15:00" },
-  "notifyTime": "18:00"
+  "notifyTime": "18:00",
+  "announcements": [
+    {
+      "date": "2026-11-01",
+      "text": "瀬戸内市民の日です。ご来店のかたに、数量限定でメンマをプレゼントします🎁",
+      "link": { "label": "瀬戸内市民の日", "url": "https://www.city.setouchi.lg.jp/soshiki/89/162377.html" }
+    }
+  ]
 }
 ```
 
-見本の `data/settings.example.json` も同じ形で、営業曜日を日曜だけとし、検証を通る値にする（要件 2.10）。
+見本の `data/settings.example.json` も同じ形で、営業曜日を日曜だけとし、検証を通る値にする（要件 2.10）。`announcements` は省略できる。
 
 ### 公開用データ `calendar.json`
 
@@ -298,6 +344,9 @@ const runNotify = async (deps: NotifyDeps): Promise<NotifyOutcome> => { /* 下�
   "generatedAt": "2026-10-05T10:00:00.000Z",
   "range": { "from": "2026-10-01", "to": "2027-09-30" },
   "businessHours": { "open": "11:00", "close": "15:00" },
+  "announcements": [
+    { "date": "2026-11-01", "text": "瀬戸内市民の日です。…", "link": { "label": "瀬戸内市民の日", "url": "https://…" } }
+  ],
   "days": [
     { "date": "2026-10-01", "open": false, "exception": false },
     { "date": "2026-10-04", "open": true, "exception": false }
@@ -355,6 +404,7 @@ IAM は最小限にする。
 | 送信がタイムアウトする | 再送せず `failed`（`TIMEOUT`）にする。届いている可能性があることをログに書く |
 | 送信の後に `markSent` が失敗する、または関数が途中で止まる | 記録は `sending` のまま残り、その対象日には二度と送らない |
 | 公開ページで `calendar.json` を読めない | 営業可否を出さず、公式LINEで確かめるよう案内する |
+| `calendar.json` にお知らせの項目がない（お知らせより前の形） | お知らせなしとして読む。お知らせの形が正しくないとき（範囲外の日、日付の順でない、`https://` でない URL）は、データ全体を正しくないものとして扱う |
 
 起動の再試行や Lambda の再実行が起きても、記録の条件付き書き込みで送信は1回以下になる。
 
@@ -372,7 +422,9 @@ IAM は最小限にする。
 | P6 | 任意の時刻 t について、`planNotification(data, t).targetDate === addDays(toJstDate(t), 1)`。さらに `toJstDate(t)` は `t + 9時間` の UTC の日付と一致する | `src/notify/plan.property.test.ts` |
 | P7 | 任意の有効な設定 s と時刻 t について、`buildCalendarData({ settings: s, now: t })` の各日の値は `judgeDay` の結果と一致し、日付は範囲の初日から最終日まで欠けも重複もない | `src/publish/buildCalendarData.property.test.ts` |
 | P8 | 任意の公開用データと、その範囲内の閲覧時刻 t について、`selectToday(data, t)` は `toJstDate(t)` の日の値を返す。範囲外の t では `outOfRange` を返す | `src/publish/selectToday.property.test.ts` |
-| P9 | 規則を満たすように作った任意の設定を `validateSettings` が受け入れ、そこに不正な営業曜日（空、重複、未知の名前）、両方の一覧に入る日、効果のない例外のいずれかを1つ混ぜた設定を拒否する | `src/settings/validate.property.test.ts` |
+| P9 | 規則を満たすように作った任意の設定を `validateSettings` が受け入れ、そこに不正な営業曜日（空、重複、未知の名前）、両方の一覧に入る日、効果のない例外、前日配信のない日のお知らせのいずれかを1つ混ぜた設定を拒否する | `src/settings/validate.property.test.ts` |
+| P10 | 任意の有効な設定 s と時刻 t について、`buildCalendarData({ settings: s, now: t }).announcements` は、s のお知らせのうち範囲内の日のものを日付の順に並べたものと一致する | `src/publish/buildCalendarData.property.test.ts` |
+| P11 | 任意の有効な設定と実行時刻について、`runNotify`（文面は本物の `buildMessage`）が送る文面には、対象日のお知らせの文（とリンクの URL）が必ず入り、ほかの日のお知らせの文は入らない | `src/notify/runNotify.property.test.ts` |
 
 生成器：
 
@@ -381,13 +433,17 @@ IAM は最小限にする。
 - 営業曜日は、7つの曜日の空でない任意の部分集合。日曜だけの組を多めに出す
 - 有効な設定は、営業曜日に当たる日から休業日を、当たらない日から臨時営業日を選んで作る。営業時間は開始 < 終了になる組を作る
 - P5 の記録は、`Map` で条件付き書き込みを再現した偽物を使う
+- 有効な設定のお知らせは、候補の日付のうち前日配信のある日から選ぶ。文と URL には番号（文は先頭の「【1】」、URL は `/notice-1/`）を入れ、あるお知らせの文がほかの文や定型の文面の一部にならないようにする
+- P11 は、お知らせの日の前日（日本時間）に実行する場合を多めに出す。公開用データは実行時刻にデプロイしたものとする
 
 ## テスト方針
 
 - Vitest と fast-check。`npx vitest run` で単体テストとプロパティベーステストをまとめて実行する
 - 単体テスト
-  - `validateSettings`：規則ごとの違反と、違反をすべて返すこと
-  - `buildMessage`：3種類の文面の全文、営業時間が入力の値から入ること、年をまたぐ日付の表記、空行の位置、公開ページの URL を入れないこと
+  - `validateSettings`：規則ごとの違反と、違反をすべて返すこと。お知らせの規則（日付、重複、前日配信のない日、文と表示名の長さと改行、`https://` でない URL、知らない項目）
+  - `buildMessage`：3種類の文面の全文、営業時間が入力の値から入ること、年をまたぐ日付の表記、空行の位置、公開ページの URL を入れないこと。お知らせの文とリンクの位置（3種類とも）
+  - `parseCalendarData`：お知らせの項目がない古い形を受け入れること、範囲外の日・順でない日付・`https://` でない URL を拒否すること
+  - `buildPageView`：お知らせのある日のマス、月ごとの一覧、今日のお知らせ
   - `broadcast`：`fetch` を偽物にして、2xx、429、500、タイムアウトを確かめる。本物の LINE には送らない
   - `runNotify`：SSM の失敗、記録の重複、送信の失敗、`markSent` の失敗
   - `scripts/build-site.ts`：見本の設定でビルドが通り、壊れた設定で終了コード1になる

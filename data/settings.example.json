@@ -2,6 +2,19 @@
   "openWeekdays": ["sun"],
   "closedDates": ["2026-10-18"],
   "specialOpenDates": ["2026-10-21"],
-  "businessHours": { "open": "11:00", "close": "15:00" },
-  "notifyTime": "18:00"
+  "businessHours": {
+    "open": "11:00",
+    "close": "15:00"
+  },
+  "notifyTime": "18:00",
+  "announcements": [
+    {
+      "date": "2026-11-01",
+      "text": "瀬戸内市民の日です。ご来店のかたに、数量限定でメンマをプレゼントします🎁",
+      "link": {
+        "label": "瀬戸内市民の日",
+        "url": "https://www.city.setouchi.lg.jp/soshiki/89/162377.html"
+      }
+    }
+  ]
 }

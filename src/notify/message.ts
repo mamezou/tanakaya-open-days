@@ -1,22 +1,27 @@
 /**
- * 前日配信の案内の文面（要件 5.7）。純粋関数。
+ * 前日配信の案内の文面（要件 5.7、5.10）。純粋関数。
  *
  * 配信処理（runNotify）と Lambda の入口（handler）が、MessageInput を渡して文面を作る。
- * 文面は案内の種類（通常営業・臨時休業・臨時営業）ごとに決まった行の並びで、空行は HP の前の1行だけ。
+ * 文面は案内の種類（通常営業・臨時休業・臨時営業）ごとに決まった行の並びで、空行はリンクの前の1行だけ。
  * 日付と営業時間の表記は、公開ページと同じ src/calendar/format.ts を使う。
  *
  * 文面の末尾には、公開ページ（CloudFront）ではなく、田中屋のホームページと Instagram を載せる
  * （2026-10-06 の依頼者の指定）。MessageInput.pageUrl は配信処理との取り決めとして残すが、文面には使わない。
+ *
+ * 対象日にお知らせがあるときは、文を案内の行の次に、リンクを HP の前に足す（要件 5.10）。
  */
 import { formatBusinessHours, formatMonthDayWithWeekday } from "../calendar/format";
 import type { IsoDate } from "../calendar/date";
 import type { CalendarData } from "../publish/buildCalendarData";
+import type { Announcement } from "../settings/announcement";
 import { NoticeKind } from "./plan";
 
 export type MessageInput = {
   targetDate: IsoDate;
   kind: NoticeKind;
   businessHours: CalendarData["businessHours"];
+  /** 対象日のお知らせ。なければ null */
+  announcement: Announcement | null;
   pageUrl: string;
 };
 
@@ -30,44 +35,66 @@ const RESERVATION = "ご予約は、このLINEにご返信いただくか、Inst
 const HOMEPAGE_LINE = `HP：${HOMEPAGE_URL}`;
 const INSTAGRAM_LINE = `Instagram：${INSTAGRAM_URL}`;
 
-/** 文面に差し込む表記。date は「10月18日（日）」、hours は「11:30〜14:30」 */
-type MessageLabels = { date: string; hours: string };
+/**
+ * 文面に差し込む表記。date は「10月18日（日）」、hours は「11:30〜14:30」。
+ * note はお知らせの文の行、links はお知らせのリンクの行（どちらも、なければ空）
+ */
+type MessageLabels = {
+  date: string;
+  hours: string;
+  note: readonly string[];
+  links: readonly string[];
+};
 
 /** 案内の種類ごとの行の並び。"" は空行 */
 const MESSAGE_LINES: Readonly<Record<NoticeKind, (labels: MessageLabels) => readonly string[]>> = {
-  [NoticeKind.Regular]: ({ date, hours }) => [
+  [NoticeKind.Regular]: ({ date, hours, note, links }) => [
     GREETING,
     `明日${date}は${hours}で営業します🌿`,
+    ...note,
     RESERVATION,
     "ご来店をお待ちしております(*´ω`*)",
     "",
+    ...links,
     HOMEPAGE_LINE,
     INSTAGRAM_LINE,
   ],
-  [NoticeKind.SpecialClosed]: ({ date }) => [
+  [NoticeKind.SpecialClosed]: ({ date, note, links }) => [
     GREETING,
     `明日${date}はお休みをいただきます🙇`,
+    ...note,
     "またのお越しを楽しみにしております(^^)",
     "",
+    ...links,
     HOMEPAGE_LINE,
   ],
-  [NoticeKind.SpecialOpen]: ({ date, hours }) => [
+  [NoticeKind.SpecialOpen]: ({ date, hours, note, links }) => [
     GREETING,
     `明日${date}は特別に営業します✨`,
     `${hours}、ご来店をお待ちしております🌿`,
+    ...note,
     RESERVATION,
     "",
+    ...links,
     HOMEPAGE_LINE,
     INSTAGRAM_LINE,
   ],
 };
 
 /**
- * 案内の文面を作る（要件 5.7）。
+ * 案内の文面を作る（要件 5.7、5.10）。
  * 対象日の月日と曜日、案内の種類、営業する場合は営業時間を含める。臨時休業では営業時間を出さない。
+ * お知らせがあれば、その文とリンクを含める。
  */
-export const buildMessage = (input: MessageInput): string =>
-  MESSAGE_LINES[input.kind]({
+export const buildMessage = (input: MessageInput): string => {
+  const { announcement } = input;
+  return MESSAGE_LINES[input.kind]({
     date: formatMonthDayWithWeekday(input.targetDate),
     hours: formatBusinessHours(input.businessHours),
+    note: announcement === null ? [] : [announcement.text],
+    links:
+      announcement?.link === undefined
+        ? []
+        : [`${announcement.link.label}：${announcement.link.url}`],
   }).join("\n");
+};

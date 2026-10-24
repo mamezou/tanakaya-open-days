@@ -12,6 +12,7 @@
 - 営業日の判定：既定の営業曜日（田中屋は日曜）と、休業日・臨時営業日の例外で判定する。曜日はコードに固定せず、設定ファイルの値を使う
 - 公開ページ：今日の営業可否と営業時間、今月と来月のカレンダー、公式 LINE と Instagram へのリンク。日付が変わっても、デプロイし直さずに「今日」が切り替わる
 - LINE の前日配信：毎日決まった時刻に、翌日が営業日か例外の日なら、友だち全員に案内を送る。同じ日には1回しか送らない
+- お知らせ：イベントなどの案内を、日付ごとに1行の文とリンクで設定ファイルに書くと、前日配信と公開ページの両方に出る
 
 ## 構成
 
@@ -34,10 +35,10 @@ flowchart LR
 
 | レッスン | 実演したこと | 該当するファイル |
 |---|---|---|
-| 1 Spec 駆動開発 | 計画（`docs/plan.md`）から requirements → design → tasks を作り、tasks の順に実装した。受け入れ基準は EARS 形式で48件、正しさの性質は P1〜P9 | [`.kiro/specs/open-days/`](.kiro/specs/open-days/) |
+| 1 Spec 駆動開発 | 計画（`docs/plan.md`）から requirements → design → tasks を作り、tasks の順に実装した。受け入れ基準は EARS 形式で53件、正しさの性質は P1〜P11（P10、P11 と 2.11 などは 2026-10-24 にお知らせとして追加） | [`.kiro/specs/open-days/`](.kiro/specs/open-days/) |
 | 2 Steering | 営業ルールと用語、技術方針、テスト方針、LINE 配信の安全ルール、承認の扱いを常に読み込ませた | [`.kiro/steering/`](.kiro/steering/)（`product.md`、`tech.md`、`testing.md`、`line-messaging.md`、`start-approval.md` ほか） |
 | 3 Hooks | `src/` の保存時にテストを実行し、requirements の保存時に design と tasks への影響を確かめさせる。あわせて、クラウドの変更、`.kiro/` の書き換え、LINE の一斉送信を承認なしでは実行させない hook を作った | [`.kiro/hooks/`](.kiro/hooks/)、[`.kiro/harness/`](.kiro/harness/) |
-| 4 プロパティベーステスト | requirements の P1〜P9 を fast-check で検証した。日付は月末、年末、2月29日、日本時間の0時前後を多めに生成する | `src/**/*.property.test.ts`、[`src/testing/arbitraries.ts`](src/testing/arbitraries.ts) |
+| 4 プロパティベーステスト | requirements の P1〜P11 を fast-check で検証した。日付は月末、年末、2月29日、日本時間の0時前後を多めに生成する | `src/**/*.property.test.ts`、[`src/testing/arbitraries.ts`](src/testing/arbitraries.ts) |
 | 5 Powers | AWS SAM の Power を導入し、テスト用スタックのデプロイに使った（`sam_deploy`）。テンプレートの検証には AWS Infrastructure as Code の Power も使った | [`template.yaml`](template.yaml)、[`samconfig.toml`](samconfig.toml)、[`docs/runbooks/deploy.md`](docs/runbooks/deploy.md) |
 | 6 MCP | LINE Bot MCP Server を接続し、依頼者宛ての push だけで試験送信する。トークンは起動時に SSM から読み、ファイルに書かない | [`.kiro/agents/line-tester.md`](.kiro/agents/line-tester.md) |
 | 7 カスタムエージェント | LINE の試験送信だけを行う `line-tester`、仕様準拠を確かめる `spec-checker`、`security-auditor`、`unit-tester` を作り、使えるツールを分けた | [`.kiro/agents/`](.kiro/agents/) |
@@ -57,6 +58,8 @@ flowchart LR
 | P7 | 公開用データの各日は、判定機能の結果と一致する | `src/publish/buildCalendarData.property.test.ts` |
 | P8 | 公開ページの「今日」は、閲覧時刻を日本時間にした日付の判定と一致する | `src/publish/selectToday.property.test.ts` |
 | P9 | 設定の検証は、正しい設定をすべて受け入れ、矛盾する設定をすべて拒否する | `src/settings/validate.property.test.ts` |
+| P10 | 公開用データのお知らせは、設定のお知らせのうち範囲内のものを日付の順に並べたもの | `src/publish/buildCalendarData.property.test.ts` |
+| P11 | 前日配信の文面に入るお知らせは、対象日のものだけ | `src/notify/runNotify.property.test.ts` |
 
 テストが誤りを見逃さないか、わざとコードを壊して確かめました（休業日を無視する、営業曜日を日曜に固定する、日本時間を UTC+8 にする、記録があっても送る、など16種類）。
 
@@ -99,11 +102,18 @@ npm run build                 # 設定の検証、公開ページ、Lambda
   "closedDates": ["2026-10-18"],
   "specialOpenDates": ["2026-10-21"],
   "businessHours": { "open": "11:00", "close": "15:00" },
-  "notifyTime": "18:00"
+  "notifyTime": "18:00",
+  "announcements": [
+    {
+      "date": "2026-11-01",
+      "text": "瀬戸内市民の日です。ご来店のかたに、数量限定でメンマをプレゼントします🎁",
+      "link": { "label": "瀬戸内市民の日", "url": "https://www.city.setouchi.lg.jp/soshiki/89/162377.html" }
+    }
+  ]
 }
 ```
 
-休業日は営業曜日の日だけ、臨時営業日は営業曜日以外の日だけに登録できます。メモなどほかの項目を足すと、ビルドが止まります。
+休業日は営業曜日の日だけ、臨時営業日は営業曜日以外の日だけに登録できます。お知らせ（`announcements`、省略できる）は前日配信のある日だけに書け、文は120文字以内の1行、リンクは `https://` だけです。メモなどほかの項目を足すと、ビルドが止まります。
 
 ### デプロイ
 

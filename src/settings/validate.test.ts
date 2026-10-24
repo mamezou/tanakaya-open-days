@@ -23,7 +23,8 @@ describe("validateSettings", () => {
   describe("正常系", () => {
     it("should accept a valid settings object and return it", () => {
       const result = validateSettings(valid());
-      expect(result).toEqual({ ok: true, settings: valid() });
+      // お知らせを省略したときは空の一覧になる（要件 2.1）
+      expect(result).toEqual({ ok: true, settings: { ...valid(), announcements: [] } });
     });
 
     it("should accept empty exception lists and several business weekdays", () => {
@@ -142,6 +143,101 @@ describe("validateSettings", () => {
       ["15:00", "11:00"],
     ])("should reject business hours open=%s close=%s", (open, close) => {
       expect(pathsOf({ ...valid(), businessHours: { open, close } })).toEqual(["businessHours"]);
+    });
+  });
+
+  describe("お知らせ（要件 2.1、2.8、2.11）", () => {
+    // 2026-11-01 は日曜（営業曜日）、2026-10-21 は水曜（臨時営業日）、2026-10-22 は木曜
+    const CITIZENS_DAY = {
+      date: "2026-11-01",
+      text: "瀬戸内市民の日です。ご来店のかたに、数量限定でメンマをプレゼントします🎁",
+      link: {
+        label: "瀬戸内市民の日",
+        url: "https://www.city.setouchi.lg.jp/soshiki/89/162377.html",
+      },
+    };
+    const withAnnouncements = (announcements: unknown): Record<string, unknown> => ({
+      ...valid(),
+      announcements,
+    });
+
+    it("should accept announcements on a business weekday, a closed date and a special open date", () => {
+      const announcements = [
+        CITIZENS_DAY,
+        { date: "2026-10-18", text: "休業日のお知らせ" },
+        { date: "2026-10-21", text: "臨時営業日のお知らせ" },
+      ];
+      expect(validateSettings(withAnnouncements(announcements))).toEqual({
+        ok: true,
+        settings: { ...valid(), announcements },
+      });
+    });
+
+    it("should accept 120 characters counting an emoji as one, and an empty list", () => {
+      const text = `${"あ".repeat(119)}🎁`;
+      expect(validateSettings(withAnnouncements([{ date: "2026-11-01", text }])).ok).toBe(true);
+      expect(validateSettings(withAnnouncements([])).ok).toBe(true);
+    });
+
+    it("should reject an announcement on a day without a pre-day notice", () => {
+      const issues = issuesOf(withAnnouncements([{ date: "2026-10-22", text: "木曜" }]));
+      expect(issues.map((issue) => issue.path)).toEqual(["announcements[0].date"]);
+      expect(issues[0]?.message).toContain("pre-day notice");
+    });
+
+    it("should skip the date check of announcements when openWeekdays is invalid", () => {
+      const raw = {
+        ...withAnnouncements([{ date: "2026-10-22", text: "木曜" }]),
+        openWeekdays: [],
+      };
+      expect(pathsOf(raw)).toEqual(["openWeekdays"]);
+    });
+
+    it("should reject a second announcement on the same date", () => {
+      const raw = withAnnouncements([CITIZENS_DAY, { date: "2026-11-01", text: "2つ目" }]);
+      expect(pathsOf(raw)).toEqual(["announcements[1].date"]);
+    });
+
+    it.each([
+      ["not an array", "x", ["announcements"]],
+      ["not an object", ["x"], ["announcements[0]"]],
+      ["a missing text", [{ date: "2026-11-01" }], ["announcements[0].text"]],
+      ["a missing date", [{ text: "x" }], ["announcements[0].date"]],
+      ["an invalid date", [{ date: "2026-11-31", text: "x" }], ["announcements[0].date"]],
+      ["an empty text", [{ date: "2026-11-01", text: " " }], ["announcements[0].text"]],
+      ["a line break", [{ date: "2026-11-01", text: "1行目\n2行目" }], ["announcements[0].text"]],
+      ["a tab", [{ date: "2026-11-01", text: "a\tb" }], ["announcements[0].text"]],
+      [
+        "121 characters",
+        [{ date: "2026-11-01", text: "あ".repeat(121) }],
+        ["announcements[0].text"],
+      ],
+      ["a memo field", [{ ...CITIZENS_DAY, memo: "x" }], ["announcements[0].memo"]],
+      ["a link that is not an object", [{ ...CITIZENS_DAY, link: "x" }], ["announcements[0].link"]],
+      [
+        "a link without url",
+        [{ ...CITIZENS_DAY, link: { label: "x" } }],
+        ["announcements[0].link.url"],
+      ],
+      [
+        "a 41-character label",
+        [{ ...CITIZENS_DAY, link: { label: "あ".repeat(41), url: CITIZENS_DAY.link.url } }],
+        ["announcements[0].link.label"],
+      ],
+    ])("should reject %s", (_label, announcements, paths) => {
+      expect(pathsOf(withAnnouncements(announcements))).toEqual(paths);
+    });
+
+    it.each([
+      "http://example.com/",
+      "javascript:alert(1)",
+      "https://",
+      "https://example.com/a b",
+      "//example.com/",
+      `https://example.com/${"a".repeat(500)}`,
+    ])("should reject the link url %j", (url) => {
+      const raw = withAnnouncements([{ ...CITIZENS_DAY, link: { label: "x", url } }]);
+      expect(pathsOf(raw)).toEqual(["announcements[0].link.url"]);
     });
   });
 

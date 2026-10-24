@@ -92,7 +92,11 @@ aws scheduler list-schedules --profile mamelabo --region ap-northeast-1 \
 
 `State` が `DISABLED` であること。
 
-## 2. 設定だけを変えるとき（休業日、臨時営業日、営業曜日、営業時間）
+## 2. 設定だけを変えるとき（休業日、臨時営業日、営業曜日、営業時間、お知らせ）
+
+お知らせ（`announcements`）は、日付ごとに1行の文と任意のリンクを書きます。前日配信のある日（営業曜日の日か臨時営業日）にだけ書けます。文は LINE の前日配信と公開ページの両方にそのまま出るので、「明日は」などの日付によることばは入れません。
+
+ただし、お知らせの機能を入れる最初の反映だけは、この章ではなく 3.1 の順で行います。
 
 提出後のコミット禁止期間にも、この手順で反映できます。git は使いません。
 
@@ -122,6 +126,23 @@ aws scheduler list-schedules --profile mamelabo --region ap-northeast-1 \
 sam deploy --config-env prod --parameter-overrides 'NotifyEnabled=true LineTokenParameterName=/tanakaya/prod/line-channel-access-token NotifyScheduleExpression="cron(0 18 * * ? *)"'
 ```
 
+### 3.1 お知らせの機能を入れる最初の反映（承認が要る）
+
+お知らせより前の Lambda は、`calendar.json` に知らない項目（`announcements`）があると読めず、その日の配信を止めます。新しい Lambda は古い形の `calendar.json` も読めるので、必ず Lambda を先に更新します。18:00 前後の数分（配信の実行中）は避けます。
+
+```bash
+npm run build
+sam build --config-env prod
+sam deploy --config-env prod --parameter-overrides 'NotifyEnabled=true LineTokenParameterName=/tanakaya/prod/line-channel-access-token NotifyScheduleExpression="cron(0 18 * * ? *)"'
+aws s3 sync dist/site s3://<SiteBucketName> --delete --cache-control "public, max-age=300" --profile mamelabo
+aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/*" --profile mamelabo
+```
+
+反映の後に確かめること：
+
+- 公開ページのカレンダーで、お知らせの日に「★」が付き、月の下に文とリンクが出る
+- スケジュールが `ENABLED` のまま（`aws scheduler get-schedule --name tanakaya-open-days-prod-notify`、読み取りのみ）
+
 ## 4. 戻し方
 
 | 戻したいもの | 方法 |
@@ -129,6 +150,7 @@ sam deploy --config-env prod --parameter-overrides 'NotifyEnabled=true LineToken
 | 設定（公開ページと配信の内容） | 控えた設定を `data/settings.json` に戻し、2 の手順で反映する。急ぐときは S3 のバージョニングで `calendar.json` の前の版に戻せる（`aws s3api list-object-versions --bucket <SiteBucketName> --prefix calendar.json`） |
 | 前日配信を止める | `NotifyEnabled=false` でデプロイする（承認が要る） |
 | コードやテンプレート | 前のコミットに戻し、1 の手順でデプロイする |
+| お知らせより前のコードに戻す | 3.1 と逆の順にする。前のコードで `npm run build:site` を実行して S3 に反映してから（お知らせの項目がない `calendar.json` になる）、`sam deploy` で Lambda を戻す |
 | テスト用スタックを消す | バケットを空にしてから（バージョンも含む）`sam delete --config-env test`（承認が要る） |
 
 ## してはいけないこと

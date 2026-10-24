@@ -37,6 +37,7 @@ describe("buildPageView", () => {
         dayKind,
         statusLabel,
         hoursLabel,
+        announcement: null,
       });
     });
 
@@ -110,6 +111,77 @@ describe("buildPageView", () => {
       expect(buildPageView(DATA, at("2027-09-10")).months.map((month) => month.caption)).toEqual([
         "2027年9月",
       ]);
+    });
+  });
+
+  describe("お知らせ（要件 4.9、4.10）", () => {
+    const CITIZENS_DAY = {
+      date: "2026-11-01",
+      text: "瀬戸内市民の日です。ご来店のかたに、数量限定でメンマをプレゼントします🎁",
+      link: {
+        label: "瀬戸内市民の日",
+        url: "https://www.city.setouchi.lg.jp/soshiki/89/162377.html",
+      },
+    };
+    const withNotes = validateSettings({
+      openWeekdays: ["sun"],
+      closedDates: ["2026-10-18"],
+      specialOpenDates: ["2026-10-21"],
+      businessHours: { open: "11:00", close: "15:00" },
+      notifyTime: "18:00",
+      announcements: [
+        CITIZENS_DAY,
+        { date: "2026-10-21", text: "臨時営業します" },
+        { date: "2026-12-06", text: "12月のお知らせ" },
+      ],
+    });
+    if (!withNotes.ok) {
+      throw new Error("invalid test settings");
+    }
+    const NOTE_DATA = buildCalendarData({
+      settings: withNotes.settings,
+      now: new Date("2026-10-05T10:00:00Z"),
+    });
+
+    it("should mark the days with an announcement and list them under each month", () => {
+      const view = buildPageView(NOTE_DATA, at("2026-10-20"));
+      const marked = view.months
+        .flatMap((month) => month.weeks.flat())
+        .flatMap((cell) => (cell?.hasAnnouncement === true ? [cell.date] : []));
+
+      expect(marked).toEqual(["2026-10-21", "2026-11-01"]);
+      expect(view.months.map((month) => month.announcements)).toEqual([
+        [{ date: "2026-10-21", dateLabel: "10月21日（水）", text: "臨時営業します", link: null }],
+        [
+          {
+            date: "2026-11-01",
+            dateLabel: "11月1日（日）",
+            text: CITIZENS_DAY.text,
+            link: CITIZENS_DAY.link,
+          },
+        ],
+      ]);
+    });
+
+    it("should show the announcement of today under today's status", () => {
+      expect(buildPageView(NOTE_DATA, at("2026-11-01")).today).toEqual({
+        kind: "inRange",
+        dateLabel: "11月1日（日）",
+        dayKind: "open",
+        statusLabel: "営業",
+        hoursLabel: "11:00〜15:00",
+        announcement: {
+          date: "2026-11-01",
+          dateLabel: "11月1日（日）",
+          text: CITIZENS_DAY.text,
+          link: CITIZENS_DAY.link,
+        },
+      });
+    });
+
+    it("should not show an announcement of another day as today's", () => {
+      const today = buildPageView(NOTE_DATA, at("2026-10-31")).today;
+      expect(today.kind === "inRange" ? today.announcement : "unavailable").toBeNull();
     });
   });
 });

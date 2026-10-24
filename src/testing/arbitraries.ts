@@ -8,6 +8,7 @@ import { WEEKDAYS, addDays, daysInMonth, isoDateOf, weekdayOf } from "../calenda
 import type { IsoDate, Weekday } from "../calendar/date";
 import { buildCalendarData } from "../publish/buildCalendarData";
 import type { CalendarData } from "../publish/buildCalendarData";
+import type { Announcement } from "../settings/announcement";
 import type { HhMm, Settings } from "../settings/validate";
 
 export const MIN_YEAR = 2024;
@@ -90,9 +91,65 @@ export const arbBusinessHours = (): fc.Arbitrary<Settings["businessHours"]> =>
       return { open: formatMinutes(a), close: formatMinutes(b) };
     });
 
+/** お知らせの文と表示名に使う文字。番号の括弧「【】」は入れない（番号で文を区別するため） */
+const ANNOUNCEMENT_CHARS = [
+  "瀬",
+  "戸",
+  "内",
+  "メ",
+  "ン",
+  "マ",
+  "🎁",
+  "✨",
+  "A",
+  "z",
+  "0",
+  "9",
+  " ",
+  "、",
+  "。",
+  "!",
+  "(",
+  ")",
+  "：",
+] as const;
+
+const arbAnnouncementBody = (maxLength: number): fc.Arbitrary<string> =>
+  fc.string({ unit: fc.constantFrom(...ANNOUNCEMENT_CHARS), maxLength });
+
+/** お知らせ1件の、日付以外の部品。label が null ならリンクなし */
+const arbAnnouncementParts = (): fc.Arbitrary<{ body: string; label: string | null }> =>
+  fc.record({ body: arbAnnouncementBody(40), label: fc.option(arbAnnouncementBody(10)) });
+
+/**
+ * 番号 number のお知らせ。文は「【number】」で始まり、URL は /notice-number/ を含む。
+ * あるお知らせの文や URL が、ほかのお知らせや定型の文面の一部にならない
+ */
+export const announcementOf = (input: {
+  date: IsoDate;
+  number: number;
+  parts: { body: string; label: string | null };
+}): Announcement => {
+  const { date, number, parts } = input;
+  const text = `【${number}】${parts.body}`;
+  return parts.label === null
+    ? { date, text }
+    : {
+        date,
+        text,
+        link: {
+          label: `【${number}】${parts.label}`,
+          url: `https://example.com/notice-${number}/`,
+        },
+      };
+};
+
+const MAX_ANNOUNCEMENTS = 8;
+
 /**
  * 検証を通る任意の設定。
  * 候補の日付のうち、営業曜日に当たる日を休業日に、当たらない日を臨時営業日に振り分ける。
+ * お知らせは、前日配信のある日（営業曜日の日と臨時営業日）から選ぶ。並びは日付の順にしない
  */
 export const arbValidSettings = (): fc.Arbitrary<Settings> =>
   arbOpenWeekdays().chain((openWeekdays) => {
@@ -106,13 +163,28 @@ export const arbValidSettings = (): fc.Arbitrary<Settings> =>
         exceptions: arbExceptions,
         businessHours: arbBusinessHours(),
         notifyTime: arbHhMm(),
+        candidateDates: fc.uniqueArray(arbIsoDate(), { maxLength: MAX_ANNOUNCEMENTS }),
+        specialOpenCount: fc.nat({ max: 2 }),
+        parts: fc.array(arbAnnouncementParts(), {
+          minLength: MAX_ANNOUNCEMENTS,
+          maxLength: MAX_ANNOUNCEMENTS,
+        }),
       })
-      .map(({ exceptions, businessHours, notifyTime }) => ({
-        openWeekdays,
-        ...exceptions,
-        businessHours,
-        notifyTime,
-      }));
+      .map(({ exceptions, businessHours, notifyTime, candidateDates, specialOpenCount, parts }) => {
+        // 営業曜日の日と臨時営業日は重ならないため、日付は重複しない
+        const dates = [
+          ...candidateDates.filter((date) => openSet.has(weekdayOf(date))),
+          ...exceptions.specialOpenDates.slice(0, specialOpenCount),
+        ].slice(0, MAX_ANNOUNCEMENTS);
+        const announcements = dates.map((date, index) =>
+          announcementOf({
+            date,
+            number: index + 1,
+            parts: parts[index] ?? { body: "", label: null },
+          }),
+        );
+        return { openWeekdays, ...exceptions, businessHours, notifyTime, announcements };
+      });
   });
 
 /**

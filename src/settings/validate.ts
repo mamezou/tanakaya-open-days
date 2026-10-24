@@ -4,6 +4,15 @@
  */
 import { WEEKDAYS, isIsoDate, weekdayOf } from "../calendar/date";
 import type { IsoDate, Weekday } from "../calendar/date";
+import {
+  ANNOUNCEMENT_TEXT_MAX_LENGTH,
+  LINK_LABEL_MAX_LENGTH,
+  LINK_URL_MAX_LENGTH,
+  isAnnouncementText,
+  isHttpsUrl,
+  isLinkLabel,
+} from "./announcement";
+import type { Announcement, AnnouncementLink } from "./announcement";
 
 /** 24時間制の時刻。形式は HH:MM（00:00〜23:59） */
 export type HhMm = string & { readonly brand: "HhMm" };
@@ -15,6 +24,8 @@ export type Settings = {
   specialOpenDates: IsoDate[];
   businessHours: { open: HhMm; close: HhMm };
   notifyTime: HhMm;
+  /** お知らせ（要件 2.1、2.11）。設定ファイルで省略したときは空 */
+  announcements: Announcement[];
 };
 
 /** 違反1件。path は `closedDates[2]`、`businessHours.open` のような項目の位置 */
@@ -30,7 +41,13 @@ const SETTINGS_KEYS = [
   "businessHours",
   "notifyTime",
 ] as const;
+/** 省略できる最上位の項目 */
+const OPTIONAL_SETTINGS_KEYS = ["announcements"] as const;
+type SettingsKey = (typeof SETTINGS_KEYS)[number] | (typeof OPTIONAL_SETTINGS_KEYS)[number];
 const BUSINESS_HOURS_KEYS = ["open", "close"] as const;
+const ANNOUNCEMENT_KEYS = ["date", "text"] as const;
+const OPTIONAL_ANNOUNCEMENT_KEYS = ["link"] as const;
+const LINK_KEYS = ["label", "url"] as const;
 const HH_MM_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const WEEKDAY_LIST = WEEKDAYS.join(", ");
 
@@ -48,19 +65,21 @@ export const isHhMm = (value: string): value is HhMm => HH_MM_PATTERN.test(value
 const joinPath = (prefix: string, key: string): string =>
   prefix === "" ? key : `${prefix}.${key}`;
 
-/** 定義していない項目と、足りない項目を違反にする（要件 2.1、2.8） */
-const checkKeys = (
-  obj: PlainObject,
-  allowed: readonly string[],
-  prefix: string,
-  issues: ValidationIssue[],
-): void => {
+/** 定義していない項目と、足りない項目を違反にする（要件 2.1、2.8）。optional は省略できる項目 */
+const checkKeys = (input: {
+  obj: PlainObject;
+  required: readonly string[];
+  optional?: readonly string[];
+  prefix: string;
+  issues: ValidationIssue[];
+}): void => {
+  const { obj, required, optional = [], prefix, issues } = input;
   for (const key of Object.keys(obj)) {
-    if (!allowed.includes(key)) {
+    if (!required.includes(key) && !optional.includes(key)) {
       issues.push({ path: joinPath(prefix, key), message: "Unknown field." });
     }
   }
-  for (const key of allowed) {
+  for (const key of required) {
     if (!Object.hasOwn(obj, key)) {
       issues.push({ path: joinPath(prefix, key), message: "Required field is missing." });
     }
@@ -156,7 +175,7 @@ const validateBusinessHours = (
     return null;
   }
   const before = issues.length;
-  checkKeys(value, BUSINESS_HOURS_KEYS, "businessHours", issues);
+  checkKeys({ obj: value, required: BUSINESS_HOURS_KEYS, prefix: "businessHours", issues });
   const open = Object.hasOwn(value, "open")
     ? validateTime("businessHours.open", value.open, issues)
     : null;
@@ -232,6 +251,133 @@ const checkExceptions = (input: {
   }
 };
 
+/** 要件 2.11。リンクの表示名と URL */
+const validateLink = (
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[],
+): AnnouncementLink | null => {
+  if (!isPlainObject(value)) {
+    issues.push({ path, message: "Must be an object with label and url." });
+    return null;
+  }
+  const before = issues.length;
+  checkKeys({ obj: value, required: LINK_KEYS, prefix: path, issues });
+  const { label, url } = value;
+  if (Object.hasOwn(value, "label") && !isLinkLabel(label)) {
+    issues.push({
+      path: `${path}.label`,
+      message: `Must be one line of 1 to ${LINK_LABEL_MAX_LENGTH} characters.`,
+    });
+  }
+  if (Object.hasOwn(value, "url") && !isHttpsUrl(url)) {
+    issues.push({
+      path: `${path}.url`,
+      message: `Must be a valid URL that starts with https:// (up to ${LINK_URL_MAX_LENGTH} characters, no spaces).`,
+    });
+  }
+  return issues.length === before && isLinkLabel(label) && isHttpsUrl(url) ? { label, url } : null;
+};
+
+/** 要件 2.11。お知らせ1件の形（日付、文、リンク）。前日配信のある日かどうかは別に見る */
+const validateAnnouncement = (
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[],
+): Announcement | null => {
+  if (!isPlainObject(value)) {
+    issues.push({ path, message: "Must be an object with date and text." });
+    return null;
+  }
+  const before = issues.length;
+  checkKeys({
+    obj: value,
+    required: ANNOUNCEMENT_KEYS,
+    optional: OPTIONAL_ANNOUNCEMENT_KEYS,
+    prefix: path,
+    issues,
+  });
+  const { date, text } = value;
+  if (Object.hasOwn(value, "date") && !(typeof date === "string" && isIsoDate(date))) {
+    issues.push({ path: `${path}.date`, message: "Must be an existing date in YYYY-MM-DD." });
+  }
+  if (Object.hasOwn(value, "text") && !isAnnouncementText(text)) {
+    issues.push({
+      path: `${path}.text`,
+      message: `Must be one line of 1 to ${ANNOUNCEMENT_TEXT_MAX_LENGTH} characters without line breaks.`,
+    });
+  }
+  const link = Object.hasOwn(value, "link")
+    ? validateLink(value.link, `${path}.link`, issues)
+    : undefined;
+  if (issues.length !== before || typeof date !== "string" || !isIsoDate(date)) {
+    return null;
+  }
+  if (!isAnnouncementText(text) || link === null) {
+    return null;
+  }
+  return link === undefined ? { date, text } : { date, text, link };
+};
+
+/** 正しいお知らせと、元の配列での位置 */
+type IndexedAnnouncement = { announcement: Announcement; index: number };
+
+/** 要件 2.1、2.11。省略できる一覧。同じ日のお知らせは2つ目から違反 */
+const validateAnnouncements = (
+  value: unknown,
+  issues: ValidationIssue[],
+): IndexedAnnouncement[] => {
+  if (!Array.isArray(value)) {
+    issues.push({ path: "announcements", message: "Must be an array." });
+    return [];
+  }
+  const seen = new Set<IsoDate>();
+  const found: IndexedAnnouncement[] = [];
+  value.forEach((item: unknown, index) => {
+    const announcement = validateAnnouncement(item, `announcements[${index}]`, issues);
+    if (announcement === null) {
+      return;
+    }
+    if (seen.has(announcement.date)) {
+      issues.push({
+        path: `announcements[${index}].date`,
+        message: `Duplicate announcement date: ${announcement.date}`,
+      });
+      return;
+    }
+    seen.add(announcement.date);
+    found.push({ announcement, index });
+  });
+  return found;
+};
+
+/**
+ * 要件 2.11。お知らせは前日配信のある日（曜日が営業曜日の日か、臨時営業日）だけ。
+ * 営業曜日が不正なときは見ない（同じ原因の違反を重ねないため）。
+ */
+const checkAnnouncementDates = (input: {
+  weekdays: ListResult<Weekday>;
+  specialOpenDates: ListResult<IsoDate>;
+  announcements: readonly IndexedAnnouncement[];
+  issues: ValidationIssue[];
+}): void => {
+  const { weekdays, specialOpenDates, announcements, issues } = input;
+  if (!weekdays.valid) {
+    return;
+  }
+  const openSet = new Set(weekdays.items);
+  const specialSet = new Set(specialOpenDates.items);
+  for (const { announcement, index } of announcements) {
+    const { date } = announcement;
+    if (!openSet.has(weekdayOf(date)) && !specialSet.has(date)) {
+      issues.push({
+        path: `announcements[${index}].date`,
+        message: `Announcement date must have a pre-day notice (a business weekday or a special open date): ${date} is ${weekdayOf(date)}`,
+      });
+    }
+  }
+};
+
 /**
  * 設定ファイルの中身を検証する（要件2）。
  * 違反をすべて集め、1つでもあれば ok: false を返す。
@@ -241,8 +387,14 @@ export const validateSettings = (raw: unknown): ValidationResult => {
     return { ok: false, issues: [{ path: "", message: "Settings must be a JSON object." }] };
   }
   const issues: ValidationIssue[] = [];
-  checkKeys(raw, SETTINGS_KEYS, "", issues);
-  const has = (key: (typeof SETTINGS_KEYS)[number]): boolean => Object.hasOwn(raw, key);
+  checkKeys({
+    obj: raw,
+    required: SETTINGS_KEYS,
+    optional: OPTIONAL_SETTINGS_KEYS,
+    prefix: "",
+    issues,
+  });
+  const has = (key: SettingsKey): boolean => Object.hasOwn(raw, key);
 
   const weekdays = has("openWeekdays") ? validateWeekdays(raw.openWeekdays, issues) : MISSING;
   const closedDates = has("closedDates")
@@ -256,6 +408,10 @@ export const validateSettings = (raw: unknown): ValidationResult => {
     : null;
   const notifyTime = has("notifyTime") ? validateTime("notifyTime", raw.notifyTime, issues) : null;
   checkExceptions({ raw, weekdays, closedDates, specialOpenDates, issues });
+  const announcements = has("announcements")
+    ? validateAnnouncements(raw.announcements, issues)
+    : [];
+  checkAnnouncementDates({ weekdays, specialOpenDates, announcements, issues });
 
   if (issues.length > 0 || businessHours === null || notifyTime === null) {
     return { ok: false, issues };
@@ -268,6 +424,7 @@ export const validateSettings = (raw: unknown): ValidationResult => {
       specialOpenDates: specialOpenDates.items,
       businessHours,
       notifyTime,
+      announcements: announcements.map(({ announcement }) => announcement),
     },
   };
 };
