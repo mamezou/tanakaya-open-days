@@ -6,8 +6,8 @@
 import { WEEKDAY_LABEL_LIST } from "../calendar/format";
 import { parseCalendarData } from "./buildCalendarData";
 import type { CalendarData } from "./buildCalendarData";
-import { buildPageView } from "./pageView";
-import type { MonthPageView, TodayPageView } from "./pageView";
+import { ANNOUNCEMENT_MARK, ANNOUNCEMENT_SPOKEN_LABEL, buildPageView } from "./pageView";
+import type { AnnouncementView, CellView, MonthPageView, TodayPageView } from "./pageView";
 
 const CALENDAR_URL = "calendar.json";
 
@@ -45,22 +45,81 @@ const byId = (id: string): HTMLElement => {
   return node;
 };
 
+/** お知らせの文とリンク。URL は parseCalendarData で https:// だと確かめたものだけが来る */
+const announcementNodes = (announcement: AnnouncementView): Node[] => {
+  const nodes: Node[] = [element("span", { text: announcement.text })];
+  if (announcement.link !== null) {
+    const link = element("a", { text: announcement.link.label });
+    link.href = announcement.link.url;
+    nodes.push(document.createTextNode(" "), link);
+  }
+  return nodes;
+};
+
 const renderToday = (today: TodayPageView): void => {
   byId("today-date").textContent = today.dateLabel;
   const status = byId("today-status");
   const hours = byId("today-hours");
+  const note = byId("today-announcement");
   if (today.kind === "unavailable") {
     status.textContent = today.message;
     status.className = "status status-unavailable";
     hours.textContent = "";
+    note.replaceChildren();
     return;
   }
   status.textContent = today.statusLabel;
   status.className = `status status-${today.dayKind}`;
   hours.textContent = today.hoursLabel === null ? "" : `営業時間 ${today.hoursLabel}`;
+  note.replaceChildren(
+    ...(today.announcement === null ? [] : announcementNodes(today.announcement)),
+  );
 };
 
-const renderMonth = (month: MonthPageView): HTMLTableElement => {
+const renderCell = (cell: CellView | null): HTMLTableCellElement => {
+  const td = element("td");
+  if (cell === null) {
+    return td;
+  }
+  td.className = `day day-${cell.dayKind}`;
+  const day = element("span", { text: String(cell.day), className: "day-number" });
+  if (cell.hasAnnouncement) {
+    // 印は読み上げず、代わりに文字で伝える（要件 4.9）
+    const mark = element("span", { text: ANNOUNCEMENT_MARK, className: "day-note" });
+    mark.setAttribute("aria-hidden", "true");
+    day.append(
+      mark,
+      element("span", { text: ANNOUNCEMENT_SPOKEN_LABEL, className: "visually-hidden" }),
+    );
+  }
+  td.append(day, element("span", { text: cell.mark, className: "day-mark" }));
+  if (cell.isToday) {
+    td.setAttribute("aria-current", "date");
+  }
+  return td;
+};
+
+const renderAnnouncementList = (month: MonthPageView): HTMLElement[] => {
+  if (month.announcements.length === 0) {
+    return [];
+  }
+  const list = element("ul", { className: "announcements" });
+  for (const announcement of month.announcements) {
+    const item = element("li");
+    item.append(
+      element("span", { text: announcement.dateLabel, className: "announcement-date" }),
+      ...announcementNodes(announcement),
+    );
+    list.append(item);
+  }
+  return [
+    element("h3", { text: `${month.caption}のお知らせ`, className: "announcements-heading" }),
+    list,
+  ];
+};
+
+const renderMonth = (month: MonthPageView): HTMLElement => {
+  const block = element("div", { className: "month-block" });
   const table = element("table", { className: "month" });
   table.append(element("caption", { text: month.caption }));
   const headRow = element("tr");
@@ -75,22 +134,12 @@ const renderMonth = (month: MonthPageView): HTMLTableElement => {
   const body = element("tbody");
   for (const week of month.weeks) {
     const row = element("tr");
-    for (const cell of week) {
-      const td = element("td");
-      if (cell !== null) {
-        td.className = `day day-${cell.dayKind}`;
-        td.append(element("span", { text: String(cell.day), className: "day-number" }));
-        td.append(element("span", { text: cell.mark, className: "day-mark" }));
-        if (cell.isToday) {
-          td.setAttribute("aria-current", "date");
-        }
-      }
-      row.append(td);
-    }
+    row.append(...week.map(renderCell));
     body.append(row);
   }
   table.append(body);
-  return table;
+  block.append(table, ...renderAnnouncementList(month));
+  return block;
 };
 
 const render = (data: CalendarData | null): void => {

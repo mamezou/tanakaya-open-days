@@ -60,7 +60,37 @@ describe("runNotify", () => {
         targetDate: "2026-10-11",
         kind: "regular",
         businessHours: { open: "11:00", close: "15:00" },
+        announcement: null,
         pageUrl: FAKE_PAGE_URL,
+      });
+    });
+
+    it("should pass only the announcement of the target date to buildMessage (要件 5.10)", async () => {
+      const announcement = {
+        date: TARGET,
+        text: "瀬戸内市民の日です。",
+        link: { label: "瀬戸内市民の日", url: "https://example.com/citizens-day" },
+      };
+      const data = {
+        ...DATA,
+        announcements: [announcement, { date: isoDateOf(2026, 10, 18), text: "次の週" }],
+      };
+      const buildMessageSpy = vi.fn(() => "text");
+      const log = createRecordingLogger();
+
+      await runNotify(
+        createFakeDeps({
+          data,
+          now: SATURDAY_RUN,
+          overrides: { buildMessage: buildMessageSpy, log },
+        }),
+      );
+
+      expect(buildMessageSpy).toHaveBeenCalledWith(expect.objectContaining({ announcement }));
+      expect(log.entries).toContainEqual({
+        level: "info",
+        message: "Notice sent",
+        fields: { targetDate: "2026-10-11", kind: "regular", withAnnouncement: true },
       });
     });
 

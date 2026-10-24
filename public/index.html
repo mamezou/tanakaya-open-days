@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="style.css" />
     <script src="app.js" defer></script>
   </head>
+
   <body>
     <header class="site-header">
       <h1>田中屋 営業日カレンダー</h1>
@@ -18,6 +19,7 @@
         <p id="today-date" class="today-date"></p>
         <p id="today-status" class="status" aria-live="polite">読み込み中です…</p>
         <p id="today-hours" class="today-hours"></p>
+        <p id="today-announcement" class="today-announcement"></p>
       </section>
       <section class="calendar" aria-labelledby="calendar-heading">
         <h2 id="calendar-heading">営業カレンダー</h2>
@@ -27,6 +29,7 @@
           <li><span class="legend-mark day-specialOpen">臨時営業</span>臨時に営業する日</li>
           <li><span class="legend-mark day-specialClosed">臨時休業</span>臨時にお休みする日</li>
           <li><span class="legend-mark day-closed">休</span>定休日</li>
+          <li><span class="legend-mark legend-note">★</span>お知らせのある日（内容は各月の下）</li>
         </ul>
       </section>
       <section class="links" aria-labelledby="links-heading">

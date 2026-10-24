@@ -57,6 +57,9 @@ describe("buildSite", () => {
         JSON.parse(await readFile(path.join(outDir, "site/calendar.json"), "utf8")),
       );
       expect(calendar?.range).toEqual({ from: "2026-10-01", to: "2027-09-30" });
+      expect(calendar?.announcements.map((announcement) => announcement.date)).toEqual([
+        "2026-11-01",
+      ]);
       expect(await readFile(path.join(outDir, "deploy-parameters.txt"), "utf8")).toBe(
         'NotifyScheduleExpression="cron(0 18 * * ? *)"\n',
       );

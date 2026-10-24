@@ -14,6 +14,7 @@ const VIOLATION_KINDS = [
   "bothLists",
   "closedOnNonBusinessWeekday",
   "specialOpenOnBusinessWeekday",
+  "announcementWithoutNotice",
 ] as const;
 type ViolationKind = (typeof VIOLATION_KINDS)[number];
 
@@ -62,11 +63,24 @@ const injectViolation = (input: {
         ? { ...settings, specialOpenDates: [...settings.specialOpenDates, target] }
         : null;
     }
+    case "announcementWithoutNotice": {
+      // 前日配信のない日（営業曜日でなく、臨時営業日でもない日）のお知らせ
+      const target = shiftToMatch(
+        date,
+        (candidate) => !isBusinessDay(candidate) && !settings.specialOpenDates.includes(candidate),
+      );
+      return target !== null
+        ? {
+            ...settings,
+            announcements: [...settings.announcements, { date: target, text: "お知らせ" }],
+          }
+        : null;
+    }
   }
 };
 
 describe("validateSettings（正しさの性質）", () => {
-  it("P9（要件 2.3、2.5、2.6）: 規則を満たす設定をすべて受け入れる", () => {
+  it("P9（要件 2.3、2.5、2.6、2.11）: 規則を満たす設定をすべて受け入れる", () => {
     fc.assert(
       fc.property(arbValidSettings(), (settings) => {
         expect(validateSettings(structuredClone(settings))).toEqual({ ok: true, settings });
@@ -74,7 +88,7 @@ describe("validateSettings（正しさの性質）", () => {
     );
   });
 
-  it("P9（要件 2.3、2.5、2.6）: 不正な営業曜日、両方の一覧に入る日、効果のない例外のいずれかを含む設定をすべて拒否する", () => {
+  it("P9（要件 2.3、2.5、2.6、2.11）: 不正な営業曜日、両方の一覧に入る日、効果のない例外、前日配信のない日のお知らせのいずれかを含む設定をすべて拒否する", () => {
     fc.assert(
       fc.property(
         arbValidSettings(),

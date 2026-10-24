@@ -1,9 +1,11 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
+import { addDays } from "../calendar/date";
 import { buildCalendarData } from "../publish/buildCalendarData";
 import { arbInstantOnJstDate, arbIsoDate, arbValidSettings } from "../testing/arbitraries";
 import { createFakeBroadcast, createFakeDeps, createMemoryRecordStore } from "../testing/fakes";
+import { buildMessage } from "./message";
 import type { BroadcastResult } from "./runNotify";
 import { planNotification } from "./plan";
 import { runNotify } from "./runNotify";
@@ -58,6 +60,56 @@ describe("runNotify（正しさの性質）", () => {
         const plan = planNotification(data, first);
         expect(broadcast.calls.length).toBe(plan.action === "send" ? 1 : 0);
         expect(records.records.size).toBe(plan.action === "send" ? 1 : 0);
+      }),
+    );
+  });
+
+  it("P11（要件 5.10）: 送る文面に入るお知らせの文は、対象日のお知らせの文だけである", async () => {
+    // お知らせの日の前日（日本時間）に実行する場合を多めに出す。公開用データは実行時刻にデプロイしたもの
+    const arbRun = arbValidSettings().chain((settings) => {
+      const arbRunDate =
+        settings.announcements.length > 0
+          ? fc.oneof(
+              {
+                arbitrary: fc
+                  .constantFrom(...settings.announcements)
+                  .map(({ date }) => addDays(date, -1)),
+                weight: 3,
+              },
+              { arbitrary: arbIsoDate(), weight: 1 },
+            )
+          : arbIsoDate();
+      return arbRunDate.chain((runDate) =>
+        arbInstantOnJstDate(runDate).map((now) => ({
+          settings,
+          now,
+          data: buildCalendarData({ settings, now }),
+        })),
+      );
+    });
+
+    await fc.assert(
+      fc.asyncProperty(arbRun, async ({ settings, now, data }) => {
+        const broadcast = createFakeBroadcast();
+        await runNotify(createFakeDeps({ data, now, overrides: { broadcast, buildMessage } }));
+
+        const { targetDate } = planNotification(data, now);
+        const own = settings.announcements.find(({ date }) => date === targetDate);
+        const text = broadcast.calls[0]?.text;
+        if (own !== undefined) {
+          // お知らせは前日配信のある日だけなので、対象日にあれば必ず送る
+          expect(broadcast.calls).toHaveLength(1);
+          expect(text).toContain(own.text);
+          if (own.link !== undefined) {
+            expect(text).toContain(`${own.link.label}：${own.link.url}`);
+          }
+        }
+        for (const other of settings.announcements.filter(({ date }) => date !== targetDate)) {
+          expect(text ?? "").not.toContain(other.text);
+          if (other.link !== undefined) {
+            expect(text ?? "").not.toContain(other.link.url);
+          }
+        }
       }),
     );
   });

@@ -4,7 +4,7 @@
  * 手順:
  *   1. 公開用データを読み、計画を作る
  *   2. 送らない計画（skip / outOfRange）なら終わる
- *   3. 文面を作り、トークンを読む（記録を作る前に行う。失敗しても記録だけが残らない）
+ *   3. 対象日のお知らせを探して文面を作り、トークンを読む（記録を作る前に行う。失敗しても記録だけが残らない）
  *   4. 対象日の配信記録を条件付き書き込みで作る。すでにあれば送らずに終わる（要件 6.2、6.3）
  *   5. 1回だけ送る。成功なら「送信済み」、失敗なら「失敗」にする。再送しない（要件 6.4）
  *
@@ -108,10 +108,14 @@ export const runNotify = async (deps: NotifyDeps): Promise<NotifyOutcome> => {
   }
 
   const { targetDate, kind } = plan;
+  // 対象日のお知らせだけを文面に入れる（要件 5.10）
+  const announcement =
+    data.announcements.find((candidate) => candidate.date === targetDate) ?? null;
   const text = deps.buildMessage({
     targetDate,
     kind,
     businessHours: data.businessHours,
+    announcement,
     pageUrl: deps.pageUrl,
   });
   const token = await deps.getToken();
@@ -124,7 +128,7 @@ export const runNotify = async (deps: NotifyDeps): Promise<NotifyOutcome> => {
   const result = await sendOnce(deps, token, text);
   if (result.ok) {
     await updateRecord(() => deps.records.markSent(targetDate, deps.now()), targetDate, log);
-    log.info("Notice sent", { targetDate, kind });
+    log.info("Notice sent", { targetDate, kind, withAnnouncement: announcement !== null });
     return { status: "sent", targetDate, kind };
   }
 

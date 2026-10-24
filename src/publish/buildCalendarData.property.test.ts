@@ -48,6 +48,24 @@ describe("buildCalendarData（正しさの性質）", () => {
     );
   });
 
+  it("P10（要件 3.7）: お知らせは、設定のお知らせのうち範囲内の日のものを日付の順に並べたものと一致する", () => {
+    fc.assert(
+      fc.property(arbCalendarInput(), ({ settings, data }) => {
+        // 範囲の判定と並べ替えを、生成のコードと独立に書く
+        const expected = settings.announcements
+          .filter(({ date }) => data.range.from <= date && date <= data.range.to)
+          .map(({ date }) => date)
+          .sort();
+        expect(data.announcements.map(({ date }) => date)).toEqual(expected);
+        for (const announcement of data.announcements) {
+          expect(announcement).toEqual(
+            settings.announcements.find(({ date }) => date === announcement.date),
+          );
+        }
+      }),
+    );
+  });
+
   it("parseCalendarData: JSON にして読み戻すと元のデータと一致する", () => {
     fc.assert(
       fc.property(arbCalendarInput(), ({ data }) => {
