@@ -1,6 +1,6 @@
 # 設計書：田中屋 営業日カレンダー
 
-状態：確定（2026-10-05）
+状態：確定（2026-10-05）。改訂：2026-10-24（要件 5.7 の変更に合わせ、案内の文面を更新）
 
 要件は `requirements.md`（確定版）。本書の「要件 x.y」はその番号を指す。
 
@@ -19,7 +19,8 @@
 |---|---|
 | 配信処理は、最後にデプロイした設定から作った S3 の `calendar.json` を読んで判定する。設定ファイルを Lambda に持たせない | 「最後にデプロイした設定で判定する」（要件 5.8）を、公開ページと同じデータで満たせる。休業日の変更が S3 への反映だけで済む |
 | 公開用データは12か月分を作り、「今日」はブラウザで選ぶ | 再デプロイなしで日付や月が変わっても正しく表示する（要件 4.4） |
-| 公開ページの URL は Lambda の環境変数で渡す | 公開用データに AWS のリソース名を入れない（要件 3.5）。初回デプロイ前に URL が決まらない問題も避ける |
+| 案内の文面は、田中屋がふだんの告知で使う文面に合わせる。末尾には公開ページではなく、田中屋のホームページと Instagram を載せる | 2026-10-06 に依頼者が文面を指定した（要件 5.7） |
+| 公開ページの URL は Lambda の環境変数 `PAGE_URL` で渡す。今の文面には使わないが、`MessageInput.pageUrl` と一緒に残す | 公開用データに AWS のリソース名を入れない（要件 3.5）。初回デプロイ前に URL が決まらない問題も避ける。文面に戻すときに配信処理を変えずに済む |
 | デプロイ用のまとめスクリプトを作らない。`sam deploy` と `aws s3 sync` は手順書のとおり直接実行する | `.kiro/harness/` の hook はコマンドの文字列で変更系を止める。スクリプト経由だと止まらない |
 | スタックをテスト用と本番用の2つに分ける | テスト用アカウントのトークンで試験送信し、本番アカウントへの誤配信を防ぐ（要件 7.2） |
 | 設定の検証は自前の関数で書く | 違反をすべて集めて表示する（要件 2.9）。Lambda とブラウザに依存を持ち込まない |
@@ -179,7 +180,7 @@ type NotificationPlan =
 /** 要件5.2〜5.6。対象日は toJstDate(now) の翌日 */
 const planNotification = (data: CalendarData, now: Date): NotificationPlan => { /* ... */ };
 
-/** 要件5.7 */
+/** 要件5.7。pageUrl は今の文面には使わない */
 const buildMessage = (input: { targetDate: IsoDate; kind: NoticeKind; businessHours: CalendarData["businessHours"]; pageUrl: string }): string => { /* ... */ };
 ```
 
@@ -192,15 +193,41 @@ const buildMessage = (input: { targetDate: IsoDate; kind: NoticeKind; businessHo
 | 営業、例外 | 臨時営業（`specialOpen`） |
 | 休業、例外でない | 送らない |
 
-文面の案（最終の文言は実装時に確認する）：
+文面（`src/notify/message.ts`）。{日付} は「10月18日（日）」、{営業時間} は「11:30〜14:30」の形で、どちらも `src/calendar/format.ts` で作る（曜日は `weekdayOf` から）。空行は HP の前の1行だけで、末尾に改行を付けない。
+
+通常営業：
 
 ```
-田中屋です。明日10月11日（日）は通常どおり営業します。
-営業時間 11:00〜15:00
-営業日カレンダー https://xxxx.cloudfront.net/
+こんばんは、田中屋です🍜
+明日{日付}は{営業時間}で営業します🌿
+ご予約は、このLINEにご返信いただくか、Instagramのメッセージからどうぞ📩
+ご来店をお待ちしております(*´ω`*)
+
+HP：https://tanakaya-ramen.com/ja/
+Instagram：https://www.instagram.com/tanakaya_ramen/
 ```
 
-臨時休業は「明日10月18日（日）は臨時休業します。」、臨時営業は「明日10月21日（水）は臨時営業します。」に営業時間を続ける。曜日の表記は `weekdayOf` から作る。
+臨時休業（営業時間、予約の案内、Instagram は載せない）：
+
+```
+こんばんは、田中屋です🍜
+明日{日付}はお休みをいただきます🙇
+またのお越しを楽しみにしております(^^)
+
+HP：https://tanakaya-ramen.com/ja/
+```
+
+臨時営業：
+
+```
+こんばんは、田中屋です🍜
+明日{日付}は特別に営業します✨
+{営業時間}、ご来店をお待ちしております🌿
+ご予約は、このLINEにご返信いただくか、Instagramのメッセージからどうぞ📩
+
+HP：https://tanakaya-ramen.com/ja/
+Instagram：https://www.instagram.com/tanakaya_ramen/
+```
 
 配信処理の本体は、外部とのやりとりを引数で受け取る。
 
@@ -222,6 +249,7 @@ type NotifyDeps = {
   broadcast: (token: string, text: string) => Promise<BroadcastResult>;
   /** 文面を作る関数。handler は buildMessage を渡し、テストでは差し替える */
   buildMessage: (input: MessageInput) => string;
+  /** 公開ページの URL。MessageInput に渡すが、今の文面には使わない */
   pageUrl: string;
   log: Logger;
 };
@@ -229,7 +257,7 @@ type NotifyDeps = {
 const runNotify = async (deps: NotifyDeps): Promise<NotifyOutcome> => { /* 下の手順 */ };
 ```
 
-`MessageInput` は `buildMessage` の引数の型（`targetDate`、`kind`、`businessHours`、`pageUrl`）。`buildMessage` を `NotifyDeps` で受け取るのは、文面の実装と配信処理を別々に作ってテストするため。
+`MessageInput` は `buildMessage` の引数の型（`targetDate`、`kind`、`businessHours`、`pageUrl`）。`buildMessage` を `NotifyDeps` で受け取るのは、文面の実装と配信処理を別々に作ってテストするため。`pageUrl` は今の文面には使わない（設計上の判断を参照）。
 
 `runNotify` の手順：
 
@@ -297,7 +325,7 @@ const runNotify = async (deps: NotifyDeps): Promise<NotifyOutcome> => { /* 下�
 | S3 バケット | パブリックアクセスをすべてブロック、SSE-S3。バケットポリシーで CloudFront（OAC）からの読み取りだけを許す |
 | CloudFront | OAC、既定のルートオブジェクト `index.html`、HTTPS へのリダイレクト。応答ヘッダーポリシーで `Content-Security-Policy: default-src 'self'` などを付ける |
 | DynamoDB テーブル | 上の配信記録。TTL は `expiresAt` |
-| Lambda 関数 | `nodejs24.x`、esbuild でビルド（AWS SDK は外部扱い）、タイムアウト30秒。環境変数は `BUCKET_NAME`、`TABLE_NAME`、`LINE_TOKEN_PARAMETER_NAME`、`PAGE_URL`（CloudFront のドメインから作る） |
+| Lambda 関数 | `nodejs24.x`、esbuild でビルド（AWS SDK は外部扱い）、タイムアウト30秒。環境変数は `BUCKET_NAME`、`TABLE_NAME`、`LINE_TOKEN_PARAMETER_NAME`、`PAGE_URL`（CloudFront のドメインから作る。今の文面には使わない） |
 | 起動の設定 | SAM の `ScheduleV2`。`ScheduleExpression` はパラメータ、`ScheduleExpressionTimezone: Asia/Tokyo`、`State` は `NotifyEnabled` から決める |
 
 IAM は最小限にする。
@@ -359,7 +387,7 @@ IAM は最小限にする。
 - Vitest と fast-check。`npx vitest run` で単体テストとプロパティベーステストをまとめて実行する
 - 単体テスト
   - `validateSettings`：規則ごとの違反と、違反をすべて返すこと
-  - `buildMessage`：3種類の文面、曜日の表記、営業時間の有無
+  - `buildMessage`：3種類の文面の全文、営業時間が入力の値から入ること、年をまたぐ日付の表記、空行の位置、公開ページの URL を入れないこと
   - `broadcast`：`fetch` を偽物にして、2xx、429、500、タイムアウトを確かめる。本物の LINE には送らない
   - `runNotify`：SSM の失敗、記録の重複、送信の失敗、`markSent` の失敗
   - `scripts/build-site.ts`：見本の設定でビルドが通り、壊れた設定で終了コード1になる

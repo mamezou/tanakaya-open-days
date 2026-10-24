@@ -11,7 +11,6 @@ import {
   createMemoryRecordStore,
   createRecordingLogger,
 } from "../testing/fakes";
-import { NotImplementedError, buildMessage } from "./message";
 import type { NotifyDeps } from "./runNotify";
 import { DeliveryRecordUpdateError, runNotify } from "./runNotify";
 
@@ -184,17 +183,6 @@ describe("runNotify", () => {
         "NoSuchKey",
       );
       expect(records.records.size).toBe(0);
-    });
-
-    it("should throw without a record while buildMessage is not implemented (task 4.4)", async () => {
-      const records = createMemoryRecordStore();
-      const broadcast = createFakeBroadcast();
-
-      await expect(
-        runNotify(deps(SATURDAY_RUN, { records, broadcast, buildMessage })),
-      ).rejects.toThrow(NotImplementedError);
-      expect(records.records.size).toBe(0);
-      expect(broadcast.calls).toEqual([]);
     });
   });
 
